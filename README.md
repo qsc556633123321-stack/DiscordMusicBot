@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Discord 中文音樂機器人
 
 這是一個簡易 Discord 音樂機器人，使用 `discord.py`、`yt-dlp` 和 `FFmpeg` 播放 YouTube 音訊。
@@ -176,3 +177,7 @@ RUN apt-get update \
 ```powershell
 pip install -U yt-dlp
 ```
+=======
+# DiscordMusicBot
+中文 Discord 音樂機器人，支援 YouTube 播放與 queue
+>>>>>>> 6cf236136acca6d10212625e8c8a9d0f807abae0
