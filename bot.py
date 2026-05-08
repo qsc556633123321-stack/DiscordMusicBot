@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections import deque
+from pathlib import Path
 from urllib.parse import urlparse
 
 import discord
@@ -60,6 +61,10 @@ YTDL_OPTIONS = {
 }
 
 
+# 如果專案根目錄有 cookies.txt，yt-dlp 會自動使用它。
+COOKIES_FILE = Path(__file__).with_name("cookies.txt")
+
+
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
@@ -71,6 +76,16 @@ FFMPEG_EXECUTABLE = "ffmpeg"
 
 
 YOUTUBE_CLOUD_LIMIT_MESSAGE = "YouTube 目前限制雲端播放，請稍後再試，或改用本機版 Bot。"
+
+
+def get_ytdl_options() -> dict:
+    """取得 yt-dlp 設定；有 cookies.txt 時才加入 cookiefile。"""
+    options = YTDL_OPTIONS.copy()
+
+    if COOKIES_FILE.exists():
+        options["cookiefile"] = str(COOKIES_FILE)
+
+    return options
 
 
 def is_youtube_url(query: str) -> bool:
@@ -170,7 +185,7 @@ async def extract_song_info(query: str) -> dict:
     """用 yt-dlp 取得歌曲資訊。"""
 
     def _extract():
-        with YoutubeDL(YTDL_OPTIONS) as ydl:
+        with YoutubeDL(get_ytdl_options()) as ydl:
             info = ydl.extract_info(query, download=False)
 
             # 如果是搜尋結果，取第一筆
