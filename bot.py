@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections import deque
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands
@@ -55,7 +56,6 @@ def get_guild_data(guild_id: int) -> dict:
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "noplaylist": True,
-    "default_search": "ytsearch",
     "quiet": True,
 }
 
@@ -68,6 +68,17 @@ FFMPEG_OPTIONS = {
 
 # Railway / Docker 內會透過 apt 安裝 ffmpeg，因此直接使用系統 PATH 裡的 ffmpeg。
 FFMPEG_EXECUTABLE = "ffmpeg"
+
+
+def is_youtube_url(query: str) -> bool:
+    """判斷使用者輸入是否為 YouTube 影片網址，雲端版先不支援關鍵字搜尋。"""
+    parsed_url = urlparse(query.strip())
+
+    if parsed_url.scheme not in ("http", "https"):
+        return False
+
+    hostname = parsed_url.netloc.lower()
+    return hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com")
 
 
 def cancel_idle_timer(guild_id: int) -> None:
@@ -234,7 +245,13 @@ async def join_command(ctx: commands.Context):
 async def play_command(ctx: commands.Context, *, query: str | None = None):
     """播放音樂或加入歌單。"""
     if not query:
-        await ctx.send("請輸入 YouTube 網址或歌名，例如：`!播放 never gonna give you up`")
+        await ctx.send("請輸入 YouTube 影片網址，例如：`!播放 https://www.youtube.com/watch?v=dQw4w9WgXcQ`")
+        return
+
+    query = query.strip()
+
+    if not is_youtube_url(query):
+        await ctx.send("目前雲端環境搜尋功能受 YouTube 限制，請直接貼上 YouTube 影片網址")
         return
 
     voice_client = await join_user_voice_channel(ctx)
@@ -392,7 +409,7 @@ async def help_command(ctx: commands.Context):
     help_text = (
         "可用指令如下：\n"
         "`!加入` / `!join`：加入你所在的語音頻道\n"
-        "`!播放 <YouTube網址或歌名>` / `!play <YouTube網址或歌名>`：播放音樂或加入歌單\n"
+        "`!播放 <YouTube網址>` / `!play <YouTube網址>`：播放音樂或加入歌單\n"
         "`!暫停` / `!pause`：暫停播放\n"
         "`!繼續` / `!resume`：繼續播放\n"
         "`!跳過` / `!skip`：跳過目前歌曲\n"
