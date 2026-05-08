@@ -54,11 +54,12 @@ def get_guild_data(guild_id: int) -> dict:
 
 
 YTDL_OPTIONS = {
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "source_address": "0.0.0.0",
     "extract_flat": False,
+    "ignore_no_formats_error": True,
     "quiet": True,
 }
 
@@ -78,7 +79,7 @@ FFMPEG_EXECUTABLE = "ffmpeg"
 
 
 YOUTUBE_CLOUD_LIMIT_MESSAGE = "YouTube 目前限制雲端播放，請稍後再試，或改用本機版 Bot。"
-NO_PLAYABLE_AUDIO_MESSAGE = "找不到可播放音訊，請換一首或直接貼 YouTube 影片網址"
+NO_PLAYABLE_AUDIO_MESSAGE = "找不到可播放音訊，請換一首或直接貼其他 YouTube 影片網址"
 
 
 class NoPlayableAudioError(Exception):
