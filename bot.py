@@ -2,7 +2,6 @@ import asyncio
 import os
 from collections import deque
 from pathlib import Path
-from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands
@@ -55,8 +54,11 @@ def get_guild_data(guild_id: int) -> dict:
 
 
 YTDL_OPTIONS = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
+    "default_search": "ytsearch1",
+    "source_address": "0.0.0.0",
+    "extract_flat": False,
     "quiet": True,
 }
 
@@ -76,6 +78,11 @@ FFMPEG_EXECUTABLE = "ffmpeg"
 
 
 YOUTUBE_CLOUD_LIMIT_MESSAGE = "YouTube 目前限制雲端播放，請稍後再試，或改用本機版 Bot。"
+NO_PLAYABLE_AUDIO_MESSAGE = "找不到可播放音訊，請換一首或直接貼 YouTube 影片網址"
+
+
+class NoPlayableAudioError(Exception):
+    """yt-dlp 找到影片資料，但沒有取得可交給 FFmpeg 播放的音訊 URL。"""
 
 
 def get_ytdl_options() -> dict:
@@ -88,17 +95,6 @@ def get_ytdl_options() -> dict:
     return options
 
 
-def is_youtube_url(query: str) -> bool:
-    """判斷使用者輸入是否為 YouTube 影片網址，雲端版先不支援關鍵字搜尋。"""
-    parsed_url = urlparse(query.strip())
-
-    if parsed_url.scheme not in ("http", "https"):
-        return False
-
-    hostname = parsed_url.netloc.lower()
-    return hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com")
-
-
 def is_youtube_cloud_limit_error(error: Exception) -> bool:
     """判斷是否為 YouTube 雲端常見的登入驗證或 cookies 錯誤。"""
     error_text = str(error).lower()
@@ -107,6 +103,16 @@ def is_youtube_cloud_limit_error(error: Exception) -> bool:
         or "sign in to confirm you’re not a bot" in error_text
         or "cookies" in error_text
         or "cookie" in error_text
+    )
+
+
+def is_no_playable_audio_error(error: Exception) -> bool:
+    """判斷是否為沒有可播放音訊格式的錯誤。"""
+    error_text = str(error).lower()
+    return (
+        isinstance(error, NoPlayableAudioError)
+        or "requested format is not available" in error_text
+        or "only images are available" in error_text
     )
 
 
@@ -188,14 +194,25 @@ async def extract_song_info(query: str) -> dict:
         with YoutubeDL(get_ytdl_options()) as ydl:
             info = ydl.extract_info(query, download=False)
 
+            if not info:
+                raise NoPlayableAudioError()
+
             # 如果是搜尋結果，取第一筆
             if "entries" in info:
+                if not info["entries"]:
+                    raise NoPlayableAudioError()
                 info = info["entries"][0]
+                if not info:
+                    raise NoPlayableAudioError()
+
+            stream_url = info.get("url")
+            if not stream_url:
+                raise NoPlayableAudioError()
 
             return {
                 "title": info.get("title", "未知標題"),
                 "webpage_url": info.get("webpage_url", query),
-                "stream_url": info["url"],
+                "stream_url": stream_url,
             }
 
     return await asyncio.to_thread(_extract)
@@ -274,14 +291,10 @@ async def join_command(ctx: commands.Context):
 async def play_command(ctx: commands.Context, *, query: str | None = None):
     """播放音樂或加入歌單。"""
     if not query:
-        await ctx.send("請輸入 YouTube 影片網址，例如：`!播放 https://www.youtube.com/watch?v=dQw4w9WgXcQ`")
+        await ctx.send("請輸入 YouTube 影片網址或歌名，例如：`!播放 https://www.youtube.com/watch?v=dQw4w9WgXcQ`")
         return
 
     query = query.strip()
-
-    if not is_youtube_url(query):
-        await ctx.send("目前雲端環境搜尋功能受 YouTube 限制，請直接貼上 YouTube 影片網址")
-        return
 
     voice_client = await join_user_voice_channel(ctx)
     if voice_client is None:
@@ -297,6 +310,8 @@ async def play_command(ctx: commands.Context, *, query: str | None = None):
     except Exception as exc:
         if is_youtube_cloud_limit_error(exc):
             await ctx.send(YOUTUBE_CLOUD_LIMIT_MESSAGE)
+        elif is_no_playable_audio_error(exc):
+            await ctx.send(NO_PLAYABLE_AUDIO_MESSAGE)
         else:
             await ctx.send(f"找不到歌曲或讀取失敗：{exc}")
 
@@ -442,7 +457,7 @@ async def help_command(ctx: commands.Context):
     help_text = (
         "可用指令如下：\n"
         "`!加入` / `!join`：加入你所在的語音頻道\n"
-        "`!播放 <YouTube網址>` / `!play <YouTube網址>`：播放音樂或加入歌單\n"
+        "`!播放 <YouTube網址或歌名>` / `!play <YouTube網址或歌名>`：播放音樂或加入歌單\n"
         "`!暫停` / `!pause`：暫停播放\n"
         "`!繼續` / `!resume`：繼續播放\n"
         "`!跳過` / `!skip`：跳過目前歌曲\n"
