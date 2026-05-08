@@ -70,6 +70,9 @@ FFMPEG_OPTIONS = {
 FFMPEG_EXECUTABLE = "ffmpeg"
 
 
+YOUTUBE_CLOUD_LIMIT_MESSAGE = "YouTube 目前限制雲端播放，請稍後再試，或改用本機版 Bot。"
+
+
 def is_youtube_url(query: str) -> bool:
     """判斷使用者輸入是否為 YouTube 影片網址，雲端版先不支援關鍵字搜尋。"""
     parsed_url = urlparse(query.strip())
@@ -79,6 +82,17 @@ def is_youtube_url(query: str) -> bool:
 
     hostname = parsed_url.netloc.lower()
     return hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com")
+
+
+def is_youtube_cloud_limit_error(error: Exception) -> bool:
+    """判斷是否為 YouTube 雲端常見的登入驗證或 cookies 錯誤。"""
+    error_text = str(error).lower()
+    return (
+        "sign in to confirm you're not a bot" in error_text
+        or "sign in to confirm you’re not a bot" in error_text
+        or "cookies" in error_text
+        or "cookie" in error_text
+    )
 
 
 def cancel_idle_timer(guild_id: int) -> None:
@@ -266,7 +280,11 @@ async def play_command(ctx: commands.Context, *, query: str | None = None):
     try:
         song_info = await extract_song_info(query)
     except Exception as exc:
-        await ctx.send(f"找不到歌曲或讀取失敗：{exc}")
+        if is_youtube_cloud_limit_error(exc):
+            await ctx.send(YOUTUBE_CLOUD_LIMIT_MESSAGE)
+        else:
+            await ctx.send(f"找不到歌曲或讀取失敗：{exc}")
+
         if not guild_data["queue"] and not voice_client.is_playing() and not voice_client.is_paused():
             start_idle_timer(ctx.guild, ctx.channel)
         return
