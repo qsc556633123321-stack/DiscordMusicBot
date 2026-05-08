@@ -29,7 +29,9 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 #     123456789: {
 #         "queue": deque([...]),
 #         "current": {...},
-#         "is_playing": False
+#         "current_song": {...},
+#         "is_playing": False,
+#         "idle_task": None
 #     }
 # }
 guild_music_data = {}
@@ -41,7 +43,11 @@ def get_guild_data(guild_id: int) -> dict:
         guild_music_data[guild_id] = {
             "queue": deque(),
             "current": None,
+            "current_song": None,
             "is_playing": False,
+            "idle_task": None,
+            "last_text_channel": None,
+            "manual_stop": False,
         }
     return guild_music_data[guild_id]
 
@@ -62,6 +68,60 @@ FFMPEG_OPTIONS = {
 
 # Railway / Docker 內會透過 apt 安裝 ffmpeg，因此直接使用系統 PATH 裡的 ffmpeg。
 FFMPEG_EXECUTABLE = "ffmpeg"
+
+
+def cancel_idle_timer(guild_id: int) -> None:
+    """取消指定伺服器的自動離開計時器。"""
+    guild_data = get_guild_data(guild_id)
+    idle_task = guild_data.get("idle_task")
+
+    if idle_task and not idle_task.done():
+        idle_task.cancel()
+
+    guild_data["idle_task"] = None
+
+
+async def auto_leave_after_idle(guild_id: int, text_channel: discord.abc.Messageable) -> None:
+    """歌單播完後等待 5 分鐘，期間沒有新歌就自動離開語音頻道。"""
+    try:
+        await asyncio.sleep(300)
+
+        guild = bot.get_guild(guild_id)
+        guild_data = get_guild_data(guild_id)
+        voice_client = guild.voice_client if guild else None
+
+        if (
+            voice_client is not None
+            and not voice_client.is_playing()
+            and not voice_client.is_paused()
+            and not guild_data["queue"]
+        ):
+            guild_data["current"] = None
+            guild_data["current_song"] = None
+            guild_data["is_playing"] = False
+
+            await voice_client.disconnect()
+            await text_channel.send("歌單已播放完畢，5 分鐘內沒有新歌曲，已自動離開語音頻道")
+    except asyncio.CancelledError:
+        return
+    finally:
+        guild_data = get_guild_data(guild_id)
+        if guild_data.get("idle_task") is asyncio.current_task():
+            guild_data["idle_task"] = None
+
+
+def start_idle_timer(guild: discord.Guild, text_channel: discord.abc.Messageable | None) -> None:
+    """建立自動離開計時器，並避免同一個伺服器重複建立多個任務。"""
+    if text_channel is None:
+        return
+
+    guild_data = get_guild_data(guild.id)
+    idle_task = guild_data.get("idle_task")
+
+    if idle_task and not idle_task.done():
+        return
+
+    guild_data["idle_task"] = asyncio.create_task(auto_leave_after_idle(guild.id, text_channel))
 
 
 async def join_user_voice_channel(ctx: commands.Context) -> discord.VoiceClient | None:
@@ -109,16 +169,31 @@ async def play_next_song(guild: discord.Guild) -> None:
     if voice_client is None:
         guild_data["is_playing"] = False
         guild_data["current"] = None
+        guild_data["current_song"] = None
         return
 
     if not guild_data["queue"]:
+        should_start_idle_timer = not guild_data["manual_stop"]
+        idle_text_channel = guild_data["last_text_channel"]
+
         guild_data["is_playing"] = False
         guild_data["current"] = None
+        guild_data["current_song"] = None
+        guild_data["manual_stop"] = False
+
+        if should_start_idle_timer:
+            start_idle_timer(guild, idle_text_channel)
+
         return
+
+    cancel_idle_timer(guild.id)
 
     song = guild_data["queue"].popleft()
     guild_data["current"] = song
+    guild_data["current_song"] = song
     guild_data["is_playing"] = True
+    guild_data["manual_stop"] = False
+    guild_data["last_text_channel"] = song["request_channel"]
 
     audio_source = discord.FFmpegPCMAudio(
         song["stream_url"],
@@ -166,16 +241,21 @@ async def play_command(ctx: commands.Context, *, query: str | None = None):
     if voice_client is None:
         return
 
+    guild_data = get_guild_data(ctx.guild.id)
+    cancel_idle_timer(ctx.guild.id)
+
     await ctx.send("正在搜尋歌曲，請稍候...")
 
     try:
         song_info = await extract_song_info(query)
     except Exception as exc:
         await ctx.send(f"找不到歌曲或讀取失敗：{exc}")
+        if not guild_data["queue"] and not voice_client.is_playing() and not voice_client.is_paused():
+            start_idle_timer(ctx.guild, ctx.channel)
         return
 
-    guild_data = get_guild_data(ctx.guild.id)
     song_info["request_channel"] = ctx.channel
+    song_info["requester"] = ctx.author.display_name
     guild_data["queue"].append(song_info)
 
     await ctx.send(f"已加入歌單：**{song_info['title']}**")
@@ -247,15 +327,37 @@ async def queue_command(ctx: commands.Context):
     await ctx.send("\n".join(lines))
 
 
+@bot.command(name="正在播放", aliases=["nowplaying", "np"])
+async def now_playing_command(ctx: commands.Context):
+    """顯示目前正在播放的歌曲。"""
+    guild_data = get_guild_data(ctx.guild.id)
+    current_song = guild_data["current_song"]
+
+    if current_song is None:
+        await ctx.send("目前沒有正在播放的歌曲")
+        return
+
+    requester = current_song.get("requester", "未知")
+    await ctx.send(
+        "目前正在播放：\n"
+        f"歌名：**{current_song['title']}**\n"
+        f"網址：{current_song['webpage_url']}\n"
+        f"點歌者：{requester}"
+    )
+
+
 @bot.command(name="停止", aliases=["stop"])
 async def stop_command(ctx: commands.Context):
     """停止播放並清空歌單。"""
     voice_client = ctx.voice_client
     guild_data = get_guild_data(ctx.guild.id)
+    cancel_idle_timer(ctx.guild.id)
 
     guild_data["queue"].clear()
     guild_data["current"] = None
+    guild_data["current_song"] = None
     guild_data["is_playing"] = False
+    guild_data["manual_stop"] = True
 
     if voice_client is not None and (voice_client.is_playing() or voice_client.is_paused()):
         voice_client.stop()
@@ -272,9 +374,13 @@ async def leave_command(ctx: commands.Context):
         return
 
     guild_data = get_guild_data(ctx.guild.id)
+    cancel_idle_timer(ctx.guild.id)
+
     guild_data["queue"].clear()
     guild_data["current"] = None
+    guild_data["current_song"] = None
     guild_data["is_playing"] = False
+    guild_data["manual_stop"] = True
 
     await voice_client.disconnect()
     await ctx.send("已離開語音頻道。")
@@ -291,6 +397,7 @@ async def help_command(ctx: commands.Context):
         "`!繼續` / `!resume`：繼續播放\n"
         "`!跳過` / `!skip`：跳過目前歌曲\n"
         "`!歌單` / `!queue`：查看目前歌單\n"
+        "`!正在播放` / `!nowplaying` / `!np`：查看目前正在播放的歌曲\n"
         "`!停止` / `!stop`：停止播放並清空歌單\n"
         "`!離開` / `!leave`：離開語音頻道\n"
         "`!幫助` / `!help`：顯示這份說明"
